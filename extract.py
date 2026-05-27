@@ -117,36 +117,54 @@ def extract_date_from_text(text):
     return None
 
 
-def parse_records(text):
+def parse_records(text, fallback_date="未知日期"):
     records = []
-    blocks = re.split(r'(?=骑手姓名[:：\s])', text)
-    for block in blocks:
-        if "骑手姓名" not in block:
+    current_date = fallback_date
+    date_line_pattern = re.compile(r'—+\s*(\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2})\s*—+')
+    date_cn_pattern = re.compile(r'(\d{4})[年](\d{1,2})[月](\d{1,2})[日]')
+
+    sections = re.split(r'(—+\s*\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2}\s*—+)', text)
+
+    for section in sections:
+        date_match = date_line_pattern.search(section)
+        if date_match:
+            raw = date_match.group(1)
+            parts = re.split(r'[-/\.]', raw)
+            current_date = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
             continue
-        try:
-            record = {}
-            name_match = re.search(r'骑手姓名[:：\s]*(.+)', block)
-            phone_match = re.search(r'(?:骑手)?电话[:：\s]*(.+)', block)
-            site_match = re.search(r'入职站点[:：\s]*(.+)', block)
-            housing_match = re.search(r'是否\s*住宿[:：\s]*(.+)', block)
-            job_match = re.search(r'兼职[/／1]全职[:：\s]*(.+)', block)
-            remark_match = re.search(r'备注[:：\s]*(.+)', block)
 
-            record["骑手姓名"] = name_match.group(1).strip() if name_match else ""
-            record["骑手电话"] = phone_match.group(1).strip() if phone_match else ""
-            record["入职站点"] = site_match.group(1).strip() if site_match else ""
-            record["是否住宿"] = housing_match.group(1).strip() if housing_match else ""
-            record["兼职/全职"] = job_match.group(1).strip() if job_match else ""
-            record["备注"] = remark_match.group(1).strip() if remark_match else ""
+        blocks = re.split(r'(?=(?:骑手)?姓名[:：\s])', section)
+        for block in blocks:
+            if "姓名" not in block:
+                continue
+            try:
+                cn_date_match = date_cn_pattern.search(block)
+                if cn_date_match:
+                    current_date = f"{cn_date_match.group(1)}-{cn_date_match.group(2).zfill(2)}-{cn_date_match.group(3).zfill(2)}"
 
-            if record["骑手姓名"]:
-                records.append(record)
-        except Exception as e:
-            print(f"警告: 解析记录时出错，已跳过。错误: {e}")
+                record = {"日期": current_date}
+                name_match = re.search(r'(?:骑手)?姓名[:：\s]*(.+)', block)
+                phone_match = re.search(r'(?:骑手)?电话[:：\s]*(.+)', block)
+                site_match = re.search(r'入职站点[:：\s]*(.+)', block)
+                housing_match = re.search(r'是否\s*住宿[:：\s]*(.+)', block)
+                job_match = re.search(r'兼职[/／1]全职[:：\s]*(.+)', block)
+                remark_match = re.search(r'备注[:：\s]*(.+)', block)
+
+                record["骑手姓名"] = name_match.group(1).strip() if name_match else ""
+                record["骑手电话"] = phone_match.group(1).strip() if phone_match else ""
+                record["入职站点"] = site_match.group(1).strip() if site_match else ""
+                record["是否住宿"] = housing_match.group(1).strip() if housing_match else ""
+                record["兼职/全职"] = job_match.group(1).strip() if job_match else ""
+                record["备注"] = remark_match.group(1).strip() if remark_match else ""
+
+                if record["骑手姓名"]:
+                    records.append(record)
+            except Exception as e:
+                print(f"警告: 解析记录时出错，已跳过。错误: {e}")
     return records
 
 
-def append_to_excel(records, date_str):
+def append_to_excel(records):
     path = Path(OUTPUT_FILE)
     if path.exists():
         wb = load_workbook(OUTPUT_FILE)
@@ -173,7 +191,7 @@ def append_to_excel(records, date_str):
             existing_keys.add(key)
 
     for r in new_records:
-        ws.append([date_str, r["骑手姓名"], r["骑手电话"], r["入职站点"], r["是否住宿"], r["兼职/全职"], r["备注"]])
+        ws.append([r["日期"], r["骑手姓名"], r["骑手电话"], r["入职站点"], r["是否住宿"], r["兼职/全职"], r["备注"]])
     wb.save(OUTPUT_FILE)
     return len(new_records)
 
@@ -232,16 +250,13 @@ def main():
 
         if images:
             ocr_text = ocr_images_to_text(images)
-            ocr_date = extract_date_from_text(ocr_text)
-            if ocr_date:
-                date_str = ocr_date
 
-        records = parse_records(body)
+        records = parse_records(body, fallback_date=date_str)
         if not records and ocr_text:
-            records = parse_records(ocr_text)
+            records = parse_records(ocr_text, fallback_date=date_str)
 
         if records:
-            added = append_to_excel(records, date_str)
+            added = append_to_excel(records)
             total_records += added
             if added < len(records):
                 print(f"邮件 {uid} ({date_str}): 提取 {len(records)} 条记录，实际写入 {added} 条（{len(records) - added} 条重复）")
