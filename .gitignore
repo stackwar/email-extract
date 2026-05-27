@@ -1,0 +1,7 @@
+config.json
+*.xlsx
+processed_ids.json
+__pycache__/
+dist/
+build/
+*.spec

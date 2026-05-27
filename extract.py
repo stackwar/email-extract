@@ -1,0 +1,265 @@
+import imaplib
+import email
+import io
+import json
+import re
+import sys
+from email.header import decode_header
+from pathlib import Path
+
+import easyocr
+from openpyxl import Workbook, load_workbook
+
+ocr_reader = None
+
+
+def get_ocr_reader():
+    global ocr_reader
+    if ocr_reader is None:
+        ocr_reader = easyocr.Reader(['ch_sim', 'en'], gpu=False)
+    return ocr_reader
+
+CONFIG_FILE = "config.json"
+
+
+def load_config():
+    path = Path(CONFIG_FILE)
+    if not path.exists():
+        print(f"错误: 未找到配置文件 {CONFIG_FILE}，请参考 config.example.json 创建")
+        sys.exit(1)
+    config = json.loads(path.read_text())
+    if not config.get("email_addr") or not config.get("auth_code"):
+        print(f"错误: {CONFIG_FILE} 中缺少 email_addr 或 auth_code")
+        sys.exit(1)
+    return config
+
+
+config = load_config()
+IMAP_SERVER = config.get("imap_server", "imap.qq.com")
+EMAIL_ADDR = config["email_addr"]
+AUTH_CODE = config["auth_code"]
+SUBJECT_KEYWORD = "聊天记录"
+OUTPUT_FILE = "骑手信息.xlsx"
+PROCESSED_FILE = "processed_ids.json"
+
+
+def load_processed_ids():
+    path = Path(PROCESSED_FILE)
+    if path.exists():
+        return set(json.loads(path.read_text()))
+    return set()
+
+
+def save_processed_ids(ids):
+    Path(PROCESSED_FILE).write_text(json.dumps(sorted(ids)))
+
+
+def decode_str(s):
+    if s is None:
+        return ""
+    parts = decode_header(s)
+    result = ""
+    for content, charset in parts:
+        if isinstance(content, bytes):
+            result += content.decode(charset or "utf-8", errors="ignore")
+        else:
+            result += content
+    return result
+
+
+def get_email_body(msg):
+    body = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == "text/plain":
+                payload = part.get_payload(decode=True)
+                charset = part.get_content_charset() or "utf-8"
+                body += payload.decode(charset, errors="ignore")
+    else:
+        payload = msg.get_payload(decode=True)
+        charset = msg.get_content_charset() or "utf-8"
+        body = payload.decode(charset, errors="ignore")
+    return body
+
+
+def get_inline_images(msg):
+    images = []
+    if not msg.is_multipart():
+        return images
+    for part in msg.walk():
+        content_type = part.get_content_type()
+        if content_type.startswith("image/"):
+            payload = part.get_payload(decode=True)
+            if payload:
+                images.append(payload)
+    return images
+
+
+def ocr_images_to_text(images):
+    reader = get_ocr_reader()
+    all_text = []
+    for img_data in images:
+        try:
+            results = reader.readtext(img_data)
+            lines = [r[1] for r in results]
+            all_text.append("\n".join(lines))
+        except Exception:
+            continue
+    return "\n".join(all_text)
+
+
+def extract_date_from_text(text):
+    date_pattern = re.compile(r'(\d{4})[年/\-.](\d{1,2})[月/\-.](\d{1,2})')
+    match = date_pattern.search(text)
+    if match:
+        y, m, d = match.group(1), match.group(2).zfill(2), match.group(3).zfill(2)
+        return f"{y}-{m}-{d}"
+    return None
+
+
+def parse_records(text):
+    records = []
+    blocks = re.split(r'(?=骑手姓名[:：\s])', text)
+    for block in blocks:
+        if "骑手姓名" not in block:
+            continue
+        try:
+            record = {}
+            name_match = re.search(r'骑手姓名[:：\s]*(.+)', block)
+            phone_match = re.search(r'(?:骑手)?电话[:：\s]*(.+)', block)
+            site_match = re.search(r'入职站点[:：\s]*(.+)', block)
+            housing_match = re.search(r'是否\s*住宿[:：\s]*(.+)', block)
+            job_match = re.search(r'兼职[/／1]全职[:：\s]*(.+)', block)
+            remark_match = re.search(r'备注[:：\s]*(.+)', block)
+
+            record["骑手姓名"] = name_match.group(1).strip() if name_match else ""
+            record["骑手电话"] = phone_match.group(1).strip() if phone_match else ""
+            record["入职站点"] = site_match.group(1).strip() if site_match else ""
+            record["是否住宿"] = housing_match.group(1).strip() if housing_match else ""
+            record["兼职/全职"] = job_match.group(1).strip() if job_match else ""
+            record["备注"] = remark_match.group(1).strip() if remark_match else ""
+
+            if record["骑手姓名"]:
+                records.append(record)
+        except Exception as e:
+            print(f"警告: 解析记录时出错，已跳过。错误: {e}")
+    return records
+
+
+def append_to_excel(records, date_str):
+    path = Path(OUTPUT_FILE)
+    if path.exists():
+        wb = load_workbook(OUTPUT_FILE)
+        ws = wb.active
+    else:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "骑手信息"
+        headers = ["日期", "骑手姓名", "骑手电话", "入职站点", "是否住宿", "兼职/全职", "备注"]
+        ws.append(headers)
+
+    existing_keys = set()
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if row and len(row) >= 3:
+            existing_keys.add((str(row[1]).strip(), str(row[2]).strip()))
+
+    new_records = []
+    for r in records:
+        key = (r["骑手姓名"], r["骑手电话"])
+        if key in existing_keys:
+            print(f"  重复跳过: {r['骑手姓名']} ({r['骑手电话']})")
+        else:
+            new_records.append(r)
+            existing_keys.add(key)
+
+    for r in new_records:
+        ws.append([date_str, r["骑手姓名"], r["骑手电话"], r["入职站点"], r["是否住宿"], r["兼职/全职"], r["备注"]])
+    wb.save(OUTPUT_FILE)
+    return len(new_records)
+
+
+def main():
+    try:
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER)
+    except Exception as e:
+        print(f"错误: 无法连接到 {IMAP_SERVER}。{e}")
+        sys.exit(1)
+
+    try:
+        mail.login(EMAIL_ADDR, AUTH_CODE)
+    except imaplib.IMAP4.error as e:
+        print(f"错误: 登录失败。请检查邮箱地址和授权码。{e}")
+        sys.exit(1)
+
+    mail.select("INBOX")
+
+    _, data = mail.uid('search', 'UTF-8', 'SUBJECT', SUBJECT_KEYWORD.encode('utf-8'))
+    mail_uids = data[0].split()
+
+    if not mail_uids:
+        print("未找到标题含'聊天记录'的邮件")
+        mail.logout()
+        return
+
+    processed_ids = load_processed_ids()
+    total_records = 0
+
+    for uid_bytes in reversed(mail_uids):
+        uid = uid_bytes.decode()
+        if uid in processed_ids:
+            continue
+
+        try:
+            _, msg_data = mail.uid('fetch', uid_bytes, "(RFC822)")
+            msg = email.message_from_bytes(msg_data[0][1])
+        except Exception as e:
+            print(f"警告: 获取邮件 {uid} 失败，已跳过。{e}")
+            continue
+
+        subject = decode_str(msg["Subject"])
+        if SUBJECT_KEYWORD not in subject:
+            processed_ids.add(uid)
+            continue
+
+        try:
+            date_str = email.utils.parsedate_to_datetime(msg["Date"]).strftime("%Y-%m-%d")
+        except Exception:
+            date_str = "未知日期"
+
+        body = get_email_body(msg)
+        images = get_inline_images(msg)
+        ocr_text = ""
+
+        if images:
+            ocr_text = ocr_images_to_text(images)
+            ocr_date = extract_date_from_text(ocr_text)
+            if ocr_date:
+                date_str = ocr_date
+
+        records = parse_records(body)
+        if not records and ocr_text:
+            records = parse_records(ocr_text)
+
+        if records:
+            added = append_to_excel(records, date_str)
+            total_records += added
+            if added < len(records):
+                print(f"邮件 {uid} ({date_str}): 提取 {len(records)} 条记录，实际写入 {added} 条（{len(records) - added} 条重复）")
+            else:
+                print(f"邮件 {uid} ({date_str}): 提取 {len(records)} 条记录")
+        else:
+            print(f"邮件 {uid} ({date_str}): 未提取到骑手信息")
+
+        processed_ids.add(uid)
+
+    save_processed_ids(processed_ids)
+    mail.logout()
+
+    if total_records > 0:
+        print(f"完成。共提取 {total_records} 条新记录，已保存到 {OUTPUT_FILE}")
+    else:
+        print("没有新的记录需要处理")
+
+
+if __name__ == "__main__":
+    main()
