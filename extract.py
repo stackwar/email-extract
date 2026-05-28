@@ -4,6 +4,8 @@ import io
 import json
 import re
 import sys
+import time
+from datetime import datetime
 from email.header import decode_header
 from pathlib import Path
 
@@ -196,28 +198,29 @@ def append_to_excel(records):
     return len(new_records)
 
 
-def main():
+def connect_and_login():
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
     except Exception as e:
         print(f"错误: 无法连接到 {IMAP_SERVER}。{e}")
-        sys.exit(1)
+        return None
 
     try:
         mail.login(EMAIL_ADDR, AUTH_CODE)
     except imaplib.IMAP4.error as e:
         print(f"错误: 登录失败。请检查邮箱地址和授权码。{e}")
-        sys.exit(1)
+        return None
 
     mail.select("INBOX")
+    return mail
 
+
+def process_new_emails(mail):
     _, data = mail.uid('search', 'UTF-8', 'SUBJECT', SUBJECT_KEYWORD.encode('utf-8'))
     mail_uids = data[0].split()
 
     if not mail_uids:
-        print("未找到标题含'聊天记录'的邮件")
-        mail.logout()
-        return
+        return 0
 
     processed_ids = load_processed_ids()
     total_records = 0
@@ -268,13 +271,79 @@ def main():
         processed_ids.add(uid)
 
     save_processed_ids(processed_ids)
+    return total_records
+
+
+def main():
+    mail = connect_and_login()
+    if not mail:
+        sys.exit(1)
+
+    total = process_new_emails(mail)
     mail.logout()
 
-    if total_records > 0:
-        print(f"完成。共提取 {total_records} 条新记录，已保存到 {OUTPUT_FILE}")
+    if total > 0:
+        print(f"完成。共提取 {total} 条新记录，已保存到 {OUTPUT_FILE}")
     else:
         print("没有新的记录需要处理")
 
 
+def watch():
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 开始监听邮箱新邮件...")
+    print("按 Ctrl+C 停止\n")
+
+    while True:
+        mail = connect_and_login()
+        if not mail:
+            print("连接失败，30秒后重试...")
+            time.sleep(30)
+            continue
+
+        try:
+            total = process_new_emails(mail)
+            if total > 0:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 新增 {total} 条记录到 {OUTPUT_FILE}")
+
+            # IMAP IDLE - 等待新邮件通知
+            tag = mail._new_tag()
+            mail.send(tag + b' IDLE\r\n')
+            mail.readline()  # + idling
+
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 等待新邮件...")
+
+            while True:
+                try:
+                    mail.sock.settimeout(1680)  # 28分钟超时，避免服务器断开(RFC建议29分钟内刷新)
+                    line = mail.readline()
+                    if b'EXISTS' in line:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] 收到新邮件通知")
+                        break
+                    if b'BYE' in line:
+                        break
+                except (TimeoutError, OSError):
+                    break
+
+            # 退出 IDLE
+            try:
+                mail.send(b'DONE\r\n')
+                mail.readline()
+            except Exception:
+                pass
+
+        except KeyboardInterrupt:
+            print("\n停止监听")
+            try:
+                mail.logout()
+            except Exception:
+                pass
+            return
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 连接异常: {e}，10秒后重连...")
+            time.sleep(10)
+
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "watch":
+        watch()
+    else:
+        main()
