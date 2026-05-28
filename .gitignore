@@ -1,6 +1,8 @@
 config.json
 *.xlsx
 processed_ids.json
+license.key
+generate_license.py
 __pycache__/
 dist/
 build/

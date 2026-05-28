@@ -1,5 +1,8 @@
 import imaplib
 import email
+import base64
+import hashlib
+import hmac
 import io
 import json
 import re
@@ -13,6 +16,47 @@ import easyocr
 from openpyxl import Workbook, load_workbook
 
 ocr_reader = None
+LICENSE_SECRET = b"rider_extract_2026_sk_x9f3m"
+LICENSE_FILE = "license.key"
+
+
+def verify_license(code):
+    try:
+        raw = base64.b64decode(code.strip())
+        if len(raw) != 18:
+            return False, "授权码格式无效"
+        expire_date = raw[:10].decode("utf-8")
+        sig = raw[10:]
+        expected = hmac.HMAC(LICENSE_SECRET, raw[:10], hashlib.sha256).digest()[:8]
+        if not hmac.compare_digest(sig, expected):
+            return False, "授权码无效"
+        expire = datetime.strptime(expire_date, "%Y-%m-%d")
+        if datetime.now() > expire:
+            return False, f"授权码已过期 ({expire_date})"
+        return True, expire_date
+    except Exception:
+        return False, "授权码格式错误"
+
+
+def check_license():
+    path = Path(LICENSE_FILE)
+    if path.exists():
+        code = path.read_text().strip()
+        valid, msg = verify_license(code)
+        if valid:
+            return
+        print(f"缓存的授权码无效: {msg}")
+        path.unlink()
+
+    print("请输入授权码: ", end="", flush=True)
+    code = input()
+    valid, msg = verify_license(code)
+    if not valid:
+        print(f"错误: {msg}")
+        sys.exit(1)
+
+    path.write_text(code.strip())
+    print(f"授权验证通过，有效期至 {msg}")
 
 
 def get_ocr_reader():
@@ -343,6 +387,7 @@ def watch():
 
 
 if __name__ == "__main__":
+    check_license()
     if len(sys.argv) > 1 and sys.argv[1] == "watch":
         watch()
     else:
