@@ -45,18 +45,20 @@ def check_license():
         valid, msg = verify_license(code)
         if valid:
             return
-        print(f"缓存的授权码无效: {msg}")
+        print(f"授权码已失效: {msg}")
         path.unlink()
 
-    print("请输入授权码: ", end="", flush=True)
-    code = input()
-    valid, msg = verify_license(code)
-    if not valid:
-        print(f"错误: {msg}")
-        sys.exit(1)
-
-    path.write_text(code.strip())
-    print(f"授权验证通过，有效期至 {msg}")
+    while True:
+        print("请输入授权码: ", end="", flush=True)
+        code = input().strip()
+        if not code:
+            continue
+        valid, msg = verify_license(code)
+        if valid:
+            path.write_text(code)
+            print(f"授权验证通过，有效期至 {msg}")
+            return
+        print(f"错误: {msg}，请重新输入\n")
 
 
 def get_ocr_reader():
