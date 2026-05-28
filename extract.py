@@ -212,36 +212,51 @@ def parse_records(text, fallback_date="未知日期"):
     return records
 
 
+HEADERS = ["日期", "骑手姓名", "骑手电话", "入职站点", "是否住宿", "兼职/全职", "备注"]
+
+
+def get_or_create_sheet(wb, sheet_name):
+    if sheet_name in wb.sheetnames:
+        return wb[sheet_name]
+    ws = wb.create_sheet(title=sheet_name)
+    ws.append(HEADERS)
+    return ws
+
+
 def append_to_excel(records):
     path = Path(OUTPUT_FILE)
     if path.exists():
         wb = load_workbook(OUTPUT_FILE)
-        ws = wb.active
     else:
         wb = Workbook()
-        ws = wb.active
-        ws.title = "骑手信息"
-        headers = ["日期", "骑手姓名", "骑手电话", "入职站点", "是否住宿", "兼职/全职", "备注"]
-        ws.append(headers)
+        wb.remove(wb.active)
 
     existing_keys = set()
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if row and len(row) >= 3:
-            existing_keys.add((str(row[1]).strip(), str(row[2]).strip()))
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row and len(row) >= 3:
+                existing_keys.add((str(row[1]).strip(), str(row[2]).strip()))
 
-    new_records = []
+    new_count = 0
     for r in records:
         key = (r["骑手姓名"], r["骑手电话"])
         if key in existing_keys:
             print(f"  重复跳过: {r['骑手姓名']} ({r['骑手电话']})")
-        else:
-            new_records.append(r)
-            existing_keys.add(key)
+            continue
 
-    for r in new_records:
+        date_str = r["日期"]
+        if re.match(r'\d{4}-\d{2}', date_str):
+            sheet_name = date_str[:7]
+        else:
+            sheet_name = "未知日期"
+
+        ws = get_or_create_sheet(wb, sheet_name)
         ws.append([r["日期"], r["骑手姓名"], r["骑手电话"], r["入职站点"], r["是否住宿"], r["兼职/全职"], r["备注"]])
+        existing_keys.add(key)
+        new_count += 1
+
     wb.save(OUTPUT_FILE)
-    return len(new_records)
+    return new_count
 
 
 def connect_and_login():
