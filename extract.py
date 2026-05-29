@@ -8,9 +8,11 @@ import json
 import re
 import sys
 import time
+import tkinter as tk
 from datetime import datetime
 from email.header import decode_header
 from pathlib import Path
+from tkinter import messagebox
 
 import easyocr
 from openpyxl import Workbook, load_workbook
@@ -45,9 +47,51 @@ def check_time_rollback():
     if path.exists():
         last_date = path.read_text().strip()
         if last_date > today:
-            print("错误: 检测到系统时间异常，请恢复正确的系统时间后重试")
+            messagebox.showerror("错误", "检测到系统时间异常，请恢复正确的系统时间后重试")
             sys.exit(1)
     path.write_text(today)
+
+
+def show_license_dialog(error_msg=None):
+    result = {"code": None}
+
+    dialog = tk.Tk()
+    dialog.title("授权验证")
+    dialog.resizable(False, False)
+    dialog.attributes("-topmost", True)
+
+    window_width, window_height = 380, 180
+    screen_width = dialog.winfo_screenwidth()
+    screen_height = dialog.winfo_screenheight()
+    x = (screen_width - window_width) // 2
+    y = (screen_height - window_height) // 2
+    dialog.geometry(f"{window_width}x{window_height}+{x}+{y}")
+
+    if error_msg:
+        tk.Label(dialog, text=error_msg, fg="red").pack(pady=(10, 0))
+
+    tk.Label(dialog, text="请输入授权码：").pack(pady=(10, 5))
+    entry = tk.Entry(dialog, width=40)
+    entry.pack(pady=5)
+    entry.focus_set()
+
+    def on_submit(event=None):
+        result["code"] = entry.get().strip()
+        dialog.destroy()
+
+    def on_cancel():
+        dialog.destroy()
+
+    entry.bind("<Return>", on_submit)
+    btn_frame = tk.Frame(dialog)
+    btn_frame.pack(pady=15)
+    tk.Button(btn_frame, text="验证", width=10, command=on_submit).pack(side=tk.LEFT, padx=10)
+    tk.Button(btn_frame, text="退出", width=10, command=on_cancel).pack(side=tk.LEFT, padx=10)
+
+    dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+    dialog.mainloop()
+
+    return result["code"]
 
 
 def check_license():
@@ -59,20 +103,21 @@ def check_license():
         valid, msg = verify_license(code)
         if valid:
             return
-        print(f"授权码已失效: {msg}")
         path.unlink()
+        error_msg = f"授权码已失效: {msg}"
+    else:
+        error_msg = None
 
     while True:
-        print("请输入授权码: ", end="", flush=True)
-        code = input().strip()
+        code = show_license_dialog(error_msg)
         if not code:
-            continue
+            sys.exit(0)
         valid, msg = verify_license(code)
         if valid:
             path.write_text(code)
-            print(f"授权验证通过，有效期至 {msg}")
+            messagebox.showinfo("授权验证", f"验证通过，有效期至 {msg}")
             return
-        print(f"错误: {msg}，请重新输入\n")
+        error_msg = f"错误: {msg}"
 
 
 def get_ocr_reader():
