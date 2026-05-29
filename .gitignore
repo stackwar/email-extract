@@ -2,6 +2,7 @@ config.json
 *.xlsx
 processed_ids.json
 license.key
+.last_run
 generate_license.py
 __pycache__/
 dist/

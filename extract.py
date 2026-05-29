@@ -18,6 +18,7 @@ from openpyxl import Workbook, load_workbook
 ocr_reader = None
 LICENSE_SECRET = b"rider_extract_2026_sk_x9f3m"
 LICENSE_FILE = "license.key"
+LAST_RUN_FILE = ".last_run"
 
 
 def verify_license(code):
@@ -30,7 +31,7 @@ def verify_license(code):
         expected = hmac.HMAC(LICENSE_SECRET, raw[:10], hashlib.sha256).digest()[:8]
         if not hmac.compare_digest(sig, expected):
             return False, "授权码无效"
-        expire = datetime.strptime(expire_date, "%Y-%m-%d")
+        expire = datetime.strptime(expire_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
         if datetime.now() > expire:
             return False, f"授权码已过期 ({expire_date})"
         return True, expire_date
@@ -38,7 +39,20 @@ def verify_license(code):
         return False, "授权码格式错误"
 
 
+def check_time_rollback():
+    path = Path(LAST_RUN_FILE)
+    today = datetime.now().strftime("%Y-%m-%d")
+    if path.exists():
+        last_date = path.read_text().strip()
+        if last_date > today:
+            print("错误: 检测到系统时间异常，请恢复正确的系统时间后重试")
+            sys.exit(1)
+    path.write_text(today)
+
+
 def check_license():
+    check_time_rollback()
+
     path = Path(LICENSE_FILE)
     if path.exists():
         code = path.read_text().strip()
